@@ -1,0 +1,17 @@
+streamlit
+python-dotenv
+uuid
+logging
+sentence-transformers
+scikit-learn
+numpy
+langchain
+langchain-core
+langchain-community
+langchain-openai
+langgraph
+langchain-chroma
+chromadb
+openai
+pysqlite3-binary
+protobuf==4.25.3  # ← 여기가 핵심
