@@ -9,8 +9,3 @@ cd legal_rag_switchon
 pip install -r requirements.txt
 streamlit run app/main.py
 ```
-
-.env 파일 설정:
-```
-OPENAI_API_KEY=sk-xxxx...
-```
