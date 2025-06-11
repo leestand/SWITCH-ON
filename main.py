@@ -1,6 +1,10 @@
 """
 AI 스위치온 - 부동산 법률 상담 AI 메인 실행 파일
 """
+__import__('pysqlite3')
+import sys
+sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+
 import logging
 import streamlit as st
 
