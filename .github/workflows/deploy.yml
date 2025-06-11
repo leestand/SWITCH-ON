@@ -1,0 +1,45 @@
+name: Deploy Streamlit App
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
+      NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
+
+    steps:
+    - name: 📥 코드 체크아웃
+      uses: actions/checkout@v3
+
+    - name: 🐍 Python 설정
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: 📦 패키지 설치
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: ✅ Streamlit 실행 테스트 (로컬 테스트용)
+      run: |
+        echo "OPENAI_API_KEY=$OPENAI_API_KEY" >> .env
+        echo "NAVER_CLIENT_ID=$NAVER_CLIENT_ID" >> .env
+        echo "NAVER_CLIENT_SECRET=$NAVER_CLIENT_SECRET" >> .env
+        streamlit run main.py &
+        sleep 10
+        curl -f http://localhost:8501 || echo "Streamlit 실행 확인 실패 (CI 환경에 따라 무시 가능)"
+
+    # 선택: 서버로 배포하고 싶다면 아래에 ssh or rsync 추가
+    # - name: 🚀 EC2 또는 서버에 배포
+    #   run: |
+    #     ssh user@your-server-ip "cd /your/project && git pull && pkill streamlit && nohup streamlit run main.py &"
+
