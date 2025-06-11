@@ -8,3 +8,4 @@ langchain-chroma
 sentence-transformers
 scikit-learn
 chromadb
+protobuf<4.25.0
