@@ -38,7 +38,7 @@ load_dotenv()
 
 # ——— 🚀 Google Drive 다운로드 함수 (gdown 기반) ———
 @st.cache_data
-def download_and_extract_databases():
+def download_and_extract_databases(verbose=False):
     """Google Drive에서 ChromaDB 파일들을 다운로드하고 압축 해제"""
     
     files_to_download = [
@@ -60,36 +60,38 @@ def download_and_extract_databases():
         gdrive_id = file_info["gdrive_id"]
 
         if not os.path.exists(extract_path):
-            st.info(f"📥 다운로드 중: {zip_path}")
-            progress_bar = st.progress(0)
-            status_text = st.empty()
+            if verbose:
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                status_text.text("📥 Google Drive에서 다운로드 중...")
+
             try:
-                progress_bar.progress(10)
-                status_text.text("Google Drive에서 다운로드 중...")
+                if verbose:
+                    progress_bar.progress(10)
 
-                # ▶ gdown으로 다운로드
-                gdown.download(id=gdrive_id, output=zip_path, quiet=False)
+                gdown.download(id=gdrive_id, output=zip_path, quiet=not verbose)
 
-                progress_bar.progress(60)
-                status_text.text("압축 해제 중...")
+                if verbose:
+                    progress_bar.progress(60)
+                    status_text.text("🗂️ 압축 해제 중...")
 
                 with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                     zip_ref.extractall(extract_path)
 
                 os.remove(zip_path)
-                progress_bar.progress(100)
-                status_text.text(f"✅ 완료: {extract_path}")
-                st.success(f"✅ {extract_path} 준비 완료!")
+
+                if verbose:
+                    progress_bar.progress(100)
+                    status_text.text(f"✅ {extract_path} 준비 완료!")
 
             except Exception as e:
-                st.error(f"❌ 다운로드 실패: {zip_path} - {str(e)}")
+                if verbose:
+                    st.error(f"❌ 다운로드 실패: {zip_path} - {str(e)}")
                 return False
             finally:
-                progress_bar.empty()
-                status_text.empty()
-        else:
-            st.success(f"✅ 이미 존재함: {extract_path}")
-
+                if verbose:
+                    progress_bar.empty()
+                    status_text.empty()
         return True
 
     return all(download_and_extract_single(info) for info in files_to_download)
@@ -664,20 +666,20 @@ def create_user_friendly_chat_chain():
 
     ---
 
-    ##### ✔️ **행동방침 제안**  
-    위의 법률 자료들을 종합하여 지금 상황에서 할 수 있는 **단계별 실행 계획** 제시:
- 
+    ##### ✔️ **행동방침 제안** 
+    - 위의 법률 자료들을 종합하여 지금 상황에서 할 수 있는 **단계별 실행 계획** 제시:
+    - 각 단계별로 방법, 연락처, 비용 등을 안내합니다.
+    - 단계 당 1줄을 넘지 마세요.
 
-    각 단계별로 방법, 연락처, 비용 등을 안내합니다.
-    단계 당 1줄을 넘지 마세요.
 
     ###### ※ **유의사항**  
-    법률 자료를 바탕으로 한 주의점:  
+    법률 자료를 바탕으로 한 주의점:
+    - 유의사항은 핵심 내용만 1줄로 요약하세요.
     - 판례/해석례에서 나타난 주의할 점들  
     - 실수하기 쉬운 부분과 대비책  
     - 전문가 상담이 필요한 경우와 상담 기관 안내  
     - 법적 분쟁에서 주의해야 할 점이나 추가로 고려할 사항 정리  
-    - 유의사항은 핵심 내용만 1줄로 요약하세요.
+
 
     ---
 
@@ -687,7 +689,6 @@ def create_user_friendly_chat_chain():
     - context에 해당 유형의 자료가 없으면 **그 자료는 생략**하세요.  
     - 필요 시 **법률 상담, 상담 기관 등도 안내**합니다.  
     - **중복된 내용은 한 번만** 표기하세요.  
-    - 출처가 있다면 반드시 출처를 표기하세요. (예: **[참고: 판례-194950]**)
     """
 
     
@@ -799,28 +800,17 @@ def display_ad_banner():
 # ——— 🔧 시스템 초기화 함수 (핵심!) ———
 @st.cache_resource
 def initialize_complete_system():
-    """시스템 전체 초기화 - 데이터베이스 다운로드 + RAG 시스템 생성"""
-    
-    st.info("🚀 AI 스위치온 시스템을 초기화하고 있습니다...")
-    
-    # 1단계: 데이터베이스 다운로드
-    st.info("📥 ChromaDB 데이터베이스 다운로드 중...")
-    download_success = download_and_extract_databases()
-    
-    if download_success:
-        st.success("✅ 데이터베이스 다운로드 완료!")
-    else:
-        st.warning("⚠️ 데이터베이스 다운로드에 문제가 있지만 계속 진행합니다.")
-    
-    # 2단계: RAG 시스템 초기화
-    st.info("🤖 RAG 시스템 초기화 중...")
+    """시스템 전체 초기화"""
+    # 다운로드는 출력 없이 진행
+    download_success = download_and_extract_databases(verbose=False)
+
+    # RAG 시스템 초기화만 간단한 메시지 출력
     try:
         rag_system = get_rag_system()
-        st.success("✅ RAG 시스템 초기화 완료!")
         return rag_system, True
     except Exception as e:
-        st.error(f"❌ RAG 시스템 초기화 실패: {str(e)}")
         return None, False
+
 
 # ——— 메인 애플리케이션 ———
 def main():
