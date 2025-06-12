@@ -32,10 +32,10 @@ from langchain_openai import ChatOpenAI
 # 로그 레벨 감소
 logging.basicConfig(level=logging.WARNING)
 
-# ——— 🔧 벡터 DB 다운로드 함수 ———
+# ——— 🔧 개선된 벡터 DB 다운로드 함수 ———
 @st.cache_resource
 def download_and_extract_databases(verbose=True):
-    """허깅페이스에서 벡터 DB 다운로드"""
+    """허깅페이스에서 벡터 DB 다운로드 (개선된 버전)"""
     urls = {
         "chroma_db_law_real_final": "https://huggingface.co/datasets/sujeonggg/chroma_db_law_real_final/resolve/main/chroma_db_law_real_final.zip",
         "ja_chroma_db": "https://huggingface.co/datasets/sujeonggg/chroma_db_law_real_final/resolve/main/ja_chroma_db.zip",
@@ -45,91 +45,99 @@ def download_and_extract_databases(verbose=True):
         os.makedirs(extract_to, exist_ok=True)
         zip_path = os.path.join(extract_to, "temp.zip")
 
-        # 이미 존재하는지 확인
-        if os.path.exists(os.path.join(extract_to, "chroma.sqlite3")) or \
-           any(os.path.exists(os.path.join(extract_to, f)) for f in ["index", "chroma", "data"]):
+        # 이미 존재하는지 더 정확하게 확인
+        required_files = ["chroma.sqlite3"]  # Chroma DB의 핵심 파일
+        if all(os.path.exists(os.path.join(extract_to, f)) for f in required_files):
             if verbose:
                 print(f"✅ Already exists: {extract_to}")
+                # 파일 크기도 확인
+                sqlite_path = os.path.join(extract_to, "chroma.sqlite3")
+                file_size = os.path.getsize(sqlite_path) / (1024*1024)  # MB
+                print(f"   파일 크기: {file_size:.1f}MB")
             return True
 
         try:
             if verbose:
                 print(f"📦 Downloading from {url}...")
-            r = requests.get(url, stream=True)
+            
+            # 더 안정적인 다운로드 (타임아웃 설정)
+            r = requests.get(url, stream=True, timeout=30)
             r.raise_for_status()
+            
+            total_size = int(r.headers.get('content-length', 0))
+            downloaded_size = 0
             
             with open(zip_path, "wb") as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     if chunk:
                         f.write(chunk)
+                        downloaded_size += len(chunk)
+                        
+                        # 진행률 표시
+                        if verbose and total_size > 0:
+                            progress = (downloaded_size / total_size) * 100
+                            if downloaded_size % (1024*1024*10) == 0:  # 10MB마다 출력
+                                print(f"   다운로드 진행률: {progress:.1f}%")
 
             if verbose:
                 print(f"🧩 Unzipping to {extract_to}...")
+            
+            # 압축 해제
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(extract_to)
-
+            
+            # 임시 파일 제거
             os.remove(zip_path)
-            return True
+            
+            # 성공 검증
+            if os.path.exists(os.path.join(extract_to, "chroma.sqlite3")):
+                sqlite_path = os.path.join(extract_to, "chroma.sqlite3")
+                file_size = os.path.getsize(sqlite_path) / (1024*1024)  # MB
+                if verbose:
+                    print(f"✅ 성공! 파일 크기: {file_size:.1f}MB")
+                return True
+            else:
+                if verbose:
+                    print(f"❌ chroma.sqlite3 파일이 없습니다")
+                return False
+                
+        except requests.exceptions.Timeout:
+            if verbose:
+                print(f"❌ 다운로드 타임아웃: {url}")
+            return False
+        except requests.exceptions.RequestException as e:
+            if verbose:
+                print(f"❌ 네트워크 오류: {e}")
+            return False
+        except zipfile.BadZipFile:
+            if verbose:
+                print(f"❌ 손상된 ZIP 파일")
+            if os.path.exists(zip_path):
+                os.remove(zip_path)
+            return False
         except Exception as e:
             if verbose:
-                print(f"❌ Failed to download {url}: {e}")
+                print(f"❌ 예상치 못한 오류: {e}")
             return False
 
-    success = True
+    success_count = 0
+    total_count = len(urls)
+    
     for name, url in urls.items():
-        if not download_and_unzip(url, name):
-            success = False
+        if verbose:
+            print(f"\n🔄 {name} 다운로드 시작...")
+        if download_and_unzip(url, name):
+            success_count += 1
+        else:
+            if verbose:
+                print(f"❌ {name} 다운로드 실패")
 
-    return success
+    if verbose:
+        print(f"\n📊 다운로드 결과: {success_count}/{total_count} 성공")
+    
+    return success_count == total_count
 
-# ——— 🔧 임베딩 모델 및 DB 초기화 ———
-@st.cache_resource
-def initialize_embeddings_and_databases():
-    """임베딩 모델과 벡터 DB 초기화"""
-    try:
-        # 1. 벡터 DB 다운로드
-        print("📥 벡터 DB 다운로드 중...")
-        download_success = download_and_extract_databases(verbose=False)
-        if not download_success:
-            return None, None, None, False
-        
-        # 2. 임베딩 모델 초기화
-        print("🔄 임베딩 모델 로딩 중...")
-        embedding_model = SentenceTransformer("snunlp/KR-SBERT-V40K-klueNLI-augSTS")
-        print("✅ 임베딩 모델 로딩 완료")
-        
-        # 3. Chroma DB 연결
-        legal_db = None
-        news_db = None
-        
-        if os.path.exists("chroma_db_law_real_final"):
-            try:
-                legal_db = Chroma(
-                    persist_directory="chroma_db_law_real_final",
-                    embedding_function=embedding_model
-                )
-                print("✅ 법률 DB 연결 완료")
-            except Exception as e:
-                print(f"⚠️ 법률 DB 연결 실패: {e}")
-        
-        if os.path.exists("ja_chroma_db"):
-            try:
-                news_db = Chroma(
-                    persist_directory="ja_chroma_db",
-                    embedding_function=embedding_model
-                )
-                print("✅ 뉴스 DB 연결 완료")
-            except Exception as e:
-                print(f"⚠️ 뉴스 DB 연결 실패: {e}")
-        
-        return embedding_model, legal_db, news_db, True
-        
-    except Exception as e:
-        print(f"❌ 초기화 실패: {e}")
-        return None, None, None, False
-
-# 첫 번째 코드에 추가할 디버깅 함수들
-
+# ——— 🔧 디버깅 함수 ———
 def debug_database_connection():
     """데이터베이스 연결 상태 디버깅"""
     
@@ -137,92 +145,110 @@ def debug_database_connection():
     chroma_path = "chroma_db_law_real_final"
     news_path = "ja_chroma_db"
     
-    print("=== 데이터베이스 파일 확인 ===")
-    print(f"법률 DB 경로 존재: {os.path.exists(chroma_path)}")
-    print(f"뉴스 DB 경로 존재: {os.path.exists(news_path)}")
+    print("\n=== 데이터베이스 파일 확인 ===")
     
-    if os.path.exists(chroma_path):
+    # 법률 DB 확인
+    legal_exists = os.path.exists(chroma_path)
+    print(f"법률 DB 경로 존재: {legal_exists}")
+    
+    if legal_exists:
         files = os.listdir(chroma_path)
         print(f"법률 DB 파일들: {files}")
+        
+        sqlite_path = os.path.join(chroma_path, "chroma.sqlite3")
+        if os.path.exists(sqlite_path):
+            file_size = os.path.getsize(sqlite_path) / (1024*1024)
+            print(f"✅ chroma.sqlite3 파일 존재 ({file_size:.1f}MB)")
+        else:
+            print("❌ chroma.sqlite3 파일 없음")
+    
+    # 뉴스 DB 확인
+    news_exists = os.path.exists(news_path)
+    print(f"뉴스 DB 경로 존재: {news_exists}")
+    
+    if news_exists:
+        files = os.listdir(news_path)
+        print(f"뉴스 DB 파일들: {files}")
     
     # 2. Chroma DB 연결 테스트
     try:
-        from sentence_transformers import SentenceTransformer
+        print("\n=== 임베딩 모델 로딩 ===")
         embedding_model = SentenceTransformer("snunlp/KR-SBERT-V40K-klueNLI-augSTS")
+        print("✅ 임베딩 모델 로딩 완료")
         
-        legal_db = Chroma(
-            persist_directory=chroma_path,
-            embedding_function=embedding_model
-        )
-        
-        # 3. 검색 테스트
-        test_docs = legal_db.similarity_search("전세보증금", k=3)
-        print(f"테스트 검색 결과: {len(test_docs)}개")
-        
-        for i, doc in enumerate(test_docs):
-            print(f"문서 {i+1}:")
-            print(f"  메타데이터: {doc.metadata}")
-            print(f"  내용 미리보기: {doc.page_content[:100]}...")
+        legal_db = None
+        if legal_exists:
+            print("\n=== 법률 DB 연결 테스트 ===")
+            legal_db = Chroma(
+                persist_directory=chroma_path,
+                embedding_function=embedding_model
+            )
+            print("✅ 법률 DB 연결 완료")
             
-        return True
+            # 3. 검색 테스트
+            test_docs = legal_db.similarity_search("전세보증금", k=3)
+            print(f"검색 테스트 결과: {len(test_docs)}개")
+            
+            if test_docs:
+                for i, doc in enumerate(test_docs[:2]):
+                    print(f"문서 {i+1}:")
+                    print(f"  메타데이터: {doc.metadata}")
+                    print(f"  내용 미리보기: {doc.page_content[:100]}...")
+            else:
+                print("⚠️ 검색 결과가 없습니다")
+        
+        news_db = None
+        if news_exists:
+            print("\n=== 뉴스 DB 연결 테스트 ===")
+            news_db = Chroma(
+                persist_directory=news_path,
+                embedding_function=embedding_model
+            )
+            print("✅ 뉴스 DB 연결 완료")
+            
+            # 뉴스 검색 테스트
+            news_test = news_db.similarity_search("전세사기", k=2)
+            print(f"뉴스 검색 테스트 결과: {len(news_test)}개")
+            
+        return True, legal_db, news_db, embedding_model
         
     except Exception as e:
-        print(f"DB 연결 실패: {e}")
+        print(f"\n❌ DB 연결 실패: {e}")
         import traceback
         print(traceback.format_exc())
-        return False
+        return False, None, None, None
 
-def fix_initialization():
-    """개선된 초기화 함수"""
-    
+# ——— 🔧 개선된 임베딩 모델 및 DB 초기화 ———
+@st.cache_resource
+def initialize_embeddings_and_databases():
+    """임베딩 모델과 벡터 DB 초기화 (디버깅 포함)"""
     try:
-        # 1. 다운로드 확인
+        # 1. 벡터 DB 다운로드
+        print("📥 벡터 DB 다운로드 시작...")
         download_success = download_and_extract_databases(verbose=True)
+        
         if not download_success:
             print("❌ DB 다운로드 실패")
             return None, None, None, False
         
         # 2. 디버깅 실행
-        db_status = debug_database_connection()
+        print("\n🔍 데이터베이스 연결 디버깅...")
+        db_status, legal_db, news_db, embedding_model = debug_database_connection()
+        
         if not db_status:
             print("❌ DB 연결 테스트 실패")
             return None, None, None, False
         
-        # 3. 정상 초기화
-        embedding_model = SentenceTransformer("snunlp/KR-SBERT-V40K-klueNLI-augSTS")
-        
-        legal_db = Chroma(
-            persist_directory="chroma_db_law_real_final",
-            embedding_function=embedding_model
-        )
-        
-        news_db = Chroma(
-            persist_directory="ja_chroma_db", 
-            embedding_function=embedding_model
-        )
-        
-        print("✅ 모든 DB 연결 완료")
+        print("\n✅ 모든 시스템 초기화 완료")
         return embedding_model, legal_db, news_db, True
         
     except Exception as e:
-        print(f"❌ 초기화 실패: {e}")
+        print(f"\n❌ 초기화 실패: {e}")
+        import traceback
+        print(traceback.format_exc())
         return None, None, None, False
 
-# 메인 함수에서 사용
-def main():
-    # 기존 초기화 대신 이걸로 교체
-    with st.spinner("🔄 AI 시스템 초기화 및 디버깅 중..."):
-        embedding_model, legal_db, news_db, system_ready = fix_initialization()
-    
-    if not system_ready:
-        st.error("❌ 시스템 초기화 실패 - 판례 검색이 불가능합니다")
-        st.info("💡 해결 방법: 1) 인터넷 연결 확인 2) 다시 시도 3) 로컬 DB 경로 사용")
-        return
-    
-    # 나머지 코드는 동일...
-
-
-# ——— 커스텀 CSS 스타일 ———
+# ——— 커스텀 CSS 스타일 (기존과 동일) ———
 def load_custom_css():
     st.markdown("""
     <style>
@@ -430,7 +456,7 @@ def load_custom_css():
     </style>
     """, unsafe_allow_html=True)
 
-# ——— 법률 쿼리 전처리 클래스 ———
+# ——— 법률 쿼리 전처리 클래스 (기존과 동일) ———
 class LegalQueryPreprocessor:
     """일상어를 법률 용어로 변환하는 전처리기"""
     
@@ -519,7 +545,7 @@ class LegalQueryPreprocessor:
             print(f"⚠️ 쿼리 변환 오류: {e}")
             return user_query, "error"
 
-# ——— RAG 시스템 ———
+# ——— RAG 시스템 (기존과 동일) ———
 class OptimizedConditionalRAGSystem:
     def __init__(self, legal_db, news_db):
         print("🚀 RAG 시스템 초기화 중...")
@@ -611,7 +637,26 @@ class OptimizedConditionalRAGSystem:
             print(f"❌ 검색 오류: {e}")
             return [], "error"
 
-# 4. 최적화된 문서 포맷팅 (기존과 동일)
+# ——— 🔧 전역 RAG 시스템 인스턴스 (추가된 부분) ———
+_rag_system = None
+
+def get_rag_system():
+    """RAG 시스템 싱글톤 인스턴스 반환"""
+    global _rag_system
+    if _rag_system is None:
+        # 시스템 초기화가 완료된 후에 RAG 시스템 생성
+        try:
+            embedding_model, legal_db, news_db, system_ready = initialize_embeddings_and_databases()
+            if system_ready and (legal_db or news_db):
+                _rag_system = OptimizedConditionalRAGSystem(legal_db, news_db)
+            else:
+                _rag_system = None
+        except Exception as e:
+            print(f"❌ RAG 시스템 생성 실패: {e}")
+            _rag_system = None
+    return _rag_system
+
+# ——— 문서 포맷팅 함수 (기존과 동일) ———
 def format_docs_optimized(docs, search_type):
     """최적화된 문서 포맷팅 - 출처별 명확한 구분"""
     if not docs:
@@ -726,15 +771,14 @@ def format_docs_optimized(docs, search_type):
     
     return result
 
-
-
-
-
-# 7. 최적화된 검색 함수
+# ——— 최적화된 검색 함수 ———
 def optimized_retrieve_and_format(query):
     """최적화된 검색 및 포맷팅 - 전처리 포함"""
     try:
         rag_system = get_rag_system()
+        if rag_system is None:
+            return "시스템이 초기화되지 않았습니다."
+            
         docs, search_type = rag_system.conditional_retrieve(query)
         
         if not isinstance(docs, list):
@@ -837,10 +881,7 @@ def create_user_friendly_chat_chain(rag_system):
     def user_friendly_retrieve_and_format(query):
         """사용자 친화적 검색 및 포맷팅 - 전처리 포함"""
         try:
-            rag_system = get_rag_system()
-            docs, search_type = rag_system.conditional_retrieve(query)
-            formatted_result = format_docs_optimized(docs, search_type)
-            return formatted_result
+            return optimized_retrieve_and_format(query)
         except Exception as e:
             print(f"❌ 검색 오류: {e}")
             return "검색 중 오류가 발생했습니다."
@@ -958,9 +999,31 @@ def main():
     </div>
     """, unsafe_allow_html=True)
 
-    # ——— 🚀 핵심! 시스템 초기화 ———
-    with st.spinner("🔄 AI 시스템 초기화 중..."):
+    # ——— 🚀 핵심! 시스템 초기화 (개선된 버전) ———
+    with st.spinner("🔄 AI 시스템 초기화 및 벡터 DB 다운로드 중..."):
         embedding_model, legal_db, news_db, system_ready = initialize_embeddings_and_databases()
+
+    # ——— 시스템 상태 체크 및 알림 ———
+    if not system_ready:
+        st.error("❌ 시스템 초기화 실패")
+        
+        # 상세한 문제 해결 가이드
+        with st.expander("🔧 문제 해결 가이드", expanded=True):
+            st.info("**가능한 원인과 해결 방법:**")
+            st.info("1. **네트워크 연결**: 인터넷 연결을 확인해주세요")
+            st.info("2. **허깅페이스 서버**: 허깅페이스 서버가 일시적으로 불안정할 수 있습니다")
+            st.info("3. **용량 문제**: 약 800MB의 파일을 다운로드합니다. 여유 공간을 확인해주세요")
+            st.info("4. **재시도**: 페이지를 새로고침하여 다시 시도해주세요")
+            
+        st.info("💡 문제가 지속되면 콘솔 로그를 확인하거나 관리자에게 문의해주세요")
+        return
+    
+    # 개별 DB 상태 확인
+    if not legal_db:
+        st.warning("⚠️ 법률 데이터베이스 연결 실패 - 판례 검색이 제한될 수 있습니다")
+    
+    if not news_db:
+        st.warning("⚠️ 뉴스 데이터베이스 연결 실패 - 최신 뉴스 검색이 제한될 수 있습니다")
 
     # ——— 세션 초기화 ———
     if "session_id" not in st.session_state:
@@ -1010,7 +1073,7 @@ def main():
 
         st.markdown("<hr>", unsafe_allow_html=True)
         
-        # 시스템 상태 표시
+        # 시스템 상태 표시 (개선된 버전)
         st.markdown("""
         <div class="sidebar-card" style="border: 2px solid #10b981; background: linear-gradient(135deg, #d1fae5 0%, #a7f3d0 100%);">
             <h4 style="color: #065f46; margin-bottom: 1rem;">📊 시스템 상태</h4>
@@ -1136,4 +1199,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-
+    
