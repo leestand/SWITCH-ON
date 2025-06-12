@@ -9,11 +9,9 @@ import uuid
 import logging
 import requests
 import zipfile
-import gdown
 
 import streamlit as st
 import streamlit.components.v1 as components
-from dotenv import load_dotenv
 
 import numpy as np
 from sentence_transformers import SentenceTransformer
@@ -34,67 +32,101 @@ from langchain_openai import ChatOpenAI
 # 로그 레벨 감소
 logging.basicConfig(level=logging.WARNING)
 
-load_dotenv()
+# ——— 🔧 벡터 DB 다운로드 함수 ———
+@st.cache_resource
+def download_and_extract_databases(verbose=True):
+    """허깅페이스에서 벡터 DB 다운로드"""
+    urls = {
+        "chroma_db_law_real_final": "https://huggingface.co/datasets/sujeonggg/chroma_db_law_real_final/resolve/main/chroma_db_law_real_final.zip",
+        "ja_chroma_db": "https://huggingface.co/datasets/sujeonggg/chroma_db_law_real_final/resolve/main/ja_chroma_db.zip",
+    }
 
-# ——— 🚀 Google Drive 다운로드 함수 (gdown 기반) ———
-@st.cache_data
-def download_and_extract_databases(verbose=False):
-    """Google Drive에서 ChromaDB 파일들을 다운로드하고 압축 해제"""
-    
-    files_to_download = [
-        {
-            "filename": "chroma_db_law_real_final.zip",
-            "extract_dir": "chroma_db_law_real_final",
-            "gdrive_id": "1gp5h0QScWB3wcsbs4i12ny1wEMY_HAqX"
-        },
-        {
-            "filename": "ja_chroma_db.zip", 
-            "extract_dir": "ja_chroma_db",
-            "gdrive_id": "1dU9TLAPMg-Q8DLQjZM38CC-TsK477dSO"
-        }
-    ]
-    
-    def download_and_extract_single(file_info):
-        zip_path = file_info["filename"]
-        extract_path = file_info["extract_dir"]
-        gdrive_id = file_info["gdrive_id"]
+    def download_and_unzip(url, extract_to):
+        os.makedirs(extract_to, exist_ok=True)
+        zip_path = os.path.join(extract_to, "temp.zip")
 
-        if not os.path.exists(extract_path):
+        # 이미 존재하는지 확인
+        if os.path.exists(os.path.join(extract_to, "chroma.sqlite3")) or \
+           any(os.path.exists(os.path.join(extract_to, f)) for f in ["index", "chroma", "data"]):
             if verbose:
-                progress_bar = st.progress(0)
-                status_text = st.empty()
-                status_text.text("📥 Google Drive에서 다운로드 중...")
+                print(f"✅ Already exists: {extract_to}")
+            return True
 
+        try:
+            if verbose:
+                print(f"📦 Downloading from {url}...")
+            r = requests.get(url, stream=True)
+            r.raise_for_status()
+            
+            with open(zip_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+
+            if verbose:
+                print(f"🧩 Unzipping to {extract_to}...")
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(extract_to)
+
+            os.remove(zip_path)
+            return True
+        except Exception as e:
+            if verbose:
+                print(f"❌ Failed to download {url}: {e}")
+            return False
+
+    success = True
+    for name, url in urls.items():
+        if not download_and_unzip(url, name):
+            success = False
+
+    return success
+
+# ——— 🔧 임베딩 모델 및 DB 초기화 ———
+@st.cache_resource
+def initialize_embeddings_and_databases():
+    """임베딩 모델과 벡터 DB 초기화"""
+    try:
+        # 1. 벡터 DB 다운로드
+        print("📥 벡터 DB 다운로드 중...")
+        download_success = download_and_extract_databases(verbose=False)
+        if not download_success:
+            return None, None, None, False
+        
+        # 2. 임베딩 모델 초기화
+        print("🔄 임베딩 모델 로딩 중...")
+        embedding_model = SentenceTransformer("snunlp/KR-SBERT-V40K-klueNLI-augSTS")
+        print("✅ 임베딩 모델 로딩 완료")
+        
+        # 3. Chroma DB 연결
+        legal_db = None
+        news_db = None
+        
+        if os.path.exists("chroma_db_law_real_final"):
             try:
-                if verbose:
-                    progress_bar.progress(10)
-
-                gdown.download(id=gdrive_id, output=zip_path, quiet=not verbose)
-
-                if verbose:
-                    progress_bar.progress(60)
-                    status_text.text("🗂️ 압축 해제 중...")
-
-                with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                    zip_ref.extractall(extract_path)
-
-                os.remove(zip_path)
-
-                if verbose:
-                    progress_bar.progress(100)
-                    status_text.text(f"✅ {extract_path} 준비 완료!")
-
+                legal_db = Chroma(
+                    persist_directory="chroma_db_law_real_final",
+                    embedding_function=embedding_model
+                )
+                print("✅ 법률 DB 연결 완료")
             except Exception as e:
-                if verbose:
-                    st.error(f"❌ 다운로드 실패: {zip_path} - {str(e)}")
-                return False
-            finally:
-                if verbose:
-                    progress_bar.empty()
-                    status_text.empty()
-        return True
-
-    return all(download_and_extract_single(info) for info in files_to_download)
+                print(f"⚠️ 법률 DB 연결 실패: {e}")
+        
+        if os.path.exists("ja_chroma_db"):
+            try:
+                news_db = Chroma(
+                    persist_directory="ja_chroma_db",
+                    embedding_function=embedding_model
+                )
+                print("✅ 뉴스 DB 연결 완료")
+            except Exception as e:
+                print(f"⚠️ 뉴스 DB 연결 실패: {e}")
+        
+        return embedding_model, legal_db, news_db, True
+        
+    except Exception as e:
+        print(f"❌ 초기화 실패: {e}")
+        return None, None, None, False
 
 # ——— 커스텀 CSS 스타일 ———
 def load_custom_css():
@@ -246,22 +278,6 @@ def load_custom_css():
         to { transform: translateX(0); opacity: 1; }
     }
     
-    /* 광고 배너 */
-    .ad-banner {
-        background: linear-gradient(135deg, #fffbeb 0%, #fef3c7 100%);
-        border: 2px solid #f59e0b;
-        border-radius: 15px;
-        padding: 1.5rem;
-        margin: 1.5rem 0;
-        box-shadow: 0 6px 20px rgba(245, 158, 11, 0.15);
-        transition: transform 0.3s ease, box-shadow 0.3s ease;
-    }
-    
-    .ad-banner:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 8px 25px rgba(245, 158, 11, 0.25);
-    }
-    
     /* 버튼 스타일 */
     .stButton > button {
         background: linear-gradient(135deg, #8b5cf6 0%, #a78bfa 100%);
@@ -320,9 +336,7 @@ def load_custom_css():
     </style>
     """, unsafe_allow_html=True)
 
-# ——— 원본 코드의 모든 클래스들 (그대로 유지) ———
-
-# 1. 일상어 → 법률어 전처리 클래스
+# ——— 법률 쿼리 전처리 클래스 ———
 class LegalQueryPreprocessor:
     """일상어를 법률 용어로 변환하는 전처리기"""
     
@@ -411,119 +425,58 @@ class LegalQueryPreprocessor:
             print(f"⚠️ 쿼리 변환 오류: {e}")
             return user_query, "error"
 
-# 2. 싱글톤 패턴으로 임베딩 모델 최적화
-class SingletonMeta(type):
-    _instances = {}
-    def __call__(cls, *args, **kwargs):
-        if cls not in cls._instances:
-            cls._instances[cls] = super().__call__(*args, **kwargs)
-        return cls._instances[cls]
-
-class OptimizedKoSBERTEmbeddings(metaclass=SingletonMeta):
-    def __init__(self, model_name="jhgan/ko-sbert-sts"):
-        if not hasattr(self, 'model'):
-            print(f"🔄 KoSBERT 모델 로딩: {model_name}")
-            self.model = SentenceTransformer(model_name)
-            print("✅ KoSBERT 모델 로딩 완료")
-    
-    @functools.lru_cache(maxsize=128)
-    def embed_query_cached(self, text):
-        return tuple(self.model.encode(text))
-    
-    def embed_documents(self, texts):
-        return self.model.encode(texts, batch_size=32)
-    
-    def embed_query(self, text):
-        cached_result = self.embed_query_cached(text)
-        return np.array(cached_result)
-
-# 3. RAG 시스템 (간소화된 버전)
+# ——— RAG 시스템 ———
 class OptimizedConditionalRAGSystem:
-    def __init__(self):
-        print("🚀 최적화된 RAG 시스템 초기화 중...")
+    def __init__(self, legal_db, news_db):
+        print("🚀 RAG 시스템 초기화 중...")
+        
+        # 데이터베이스 연결
+        self.legal_db = legal_db
+        self.news_db = news_db
         
         # 쿼리 전처리기 초기화
         self.query_preprocessor = LegalQueryPreprocessor()
         print("✅ 법률 용어 전처리기 준비 완료")
         
-        # 임베딩 함수 초기화
-        self.legal_embedding_function = OptimizedKoSBERTEmbeddings()
-        print("📊 KoSBERT 768차원 임베딩 사용")
-        
-        # 임계값 설정
-        self.legal_similarity_threshold = 0.7
-        self.news_similarity_threshold = 0.6
-        self.min_relevant_docs = 3
-        
-        # 🚀 ChromaDB 연결 (다운로드된 파일 사용)
-        self._init_databases()
-    
-    def _init_databases(self):
-        """ChromaDB 초기화"""
-        try:
-            # 법률 DB 연결
-            if os.path.exists("chroma_db_law_real_final"):
-                self.legal_db = Chroma(
-                    persist_directory="chroma_db_law_real_final",
-                    collection_name="legal_db",
-                    embedding_function=self.legal_embedding_function
-                )
-                self.legal_vector_retriever = self.legal_db.as_retriever(
-                    search_type="similarity", 
-                    search_kwargs={"k": 5}
-                )
-                print("✅ 법률 DB 연결 완료")
-            else:
-                print("⚠️ 법률 DB 파일이 없습니다")
-                self.legal_db = None
-                self.legal_vector_retriever = None
-            
-            # 뉴스 DB 연결  
-            if os.path.exists("ja_chroma_db"):
-                self.news_db = Chroma(
-                    persist_directory="ja_chroma_db",
-                    collection_name="jeonse_fraud_embedding",
-                    embedding_function=self.legal_embedding_function
-                )
-                self.news_vector_retriever = self.news_db.as_retriever(
-                    search_type="similarity",
-                    search_kwargs={"k": 4}
-                )
-                print("✅ 뉴스 DB 연결 완료")
-            else:
-                print("⚠️ 뉴스 DB 파일이 없습니다")
-                self.news_db = None
-                self.news_vector_retriever = None
-                
-        except Exception as e:
-            print(f"❌ DB 연결 실패: {e}")
-            self.legal_db = None
-            self.news_db = None
+        # 리트리버 초기화
+        if self.legal_db:
+            self.legal_vector_retriever = self.legal_db.as_retriever(
+                search_type="similarity", 
+                search_kwargs={"k": 5}
+            )
+        else:
             self.legal_vector_retriever = None
+            
+        if self.news_db:
+            self.news_vector_retriever = self.news_db.as_retriever(
+                search_type="similarity",
+                search_kwargs={"k": 4}
+            )
+        else:
             self.news_vector_retriever = None
     
     def search_legal_db(self, query):
         """법률 DB 검색"""
-        if self.legal_db is None:
+        if self.legal_vector_retriever is None:
             return [], 0.0
         
         try:
             legal_docs = self.legal_vector_retriever.invoke(query)
             print(f"📄 법률 검색 결과: {len(legal_docs)}개 문서")
-            return legal_docs, 0.8  # 간단한 고정 점수
+            return legal_docs, 0.8
         except Exception as e:
             print(f"❌ 법률 DB 검색 오류: {e}")
             return [], 0.0
     
     def search_news_db(self, query):
         """뉴스 DB 검색"""
-        if self.news_db is None:
+        if self.news_vector_retriever is None:
             return [], 0.0
         
         try:
             news_docs = self.news_vector_retriever.invoke(query)
             print(f"📰 뉴스 검색 결과: {len(news_docs)}개")
-            return news_docs, 0.7  # 간단한 고정 점수
+            return news_docs, 0.7
         except Exception as e:
             print(f"❌ 뉴스 DB 검색 오류: {e}")
             return [], 0.0
@@ -569,78 +522,78 @@ def format_docs_optimized(docs, search_type):
     """최적화된 문서 포맷팅 - 출처별 명확한 구분"""
     if not docs:
         return "관련 자료를 찾을 수 없습니다."
-
+    
     formatted_docs = []
     news_count = 0
     precedent_count = 0
     interpretation_count = 0
     qa_count = 0
-
+    
     for i, doc in enumerate(docs):
         try:
             meta = doc.metadata if doc.metadata else {}
             content = str(doc.page_content)[:1000] if doc.page_content else ""
-
+            
             is_news = ('url' in meta and 'title' in meta) or ('date' in meta and 'title' in meta)
-
+            
             if is_news:
                 news_count += 1
                 title = str(meta.get("title", "제목없음"))[:80]
                 date = str(meta.get("date", "날짜미상"))
                 source = str(meta.get("source", "뉴스"))
-
+                
                 formatted = f"[뉴스-{news_count}] 📰 뉴스\n"
                 formatted += f"제목: {title}\n"
                 formatted += f"출처: {source} | 날짜: {date}\n"
                 formatted += f"내용: {content}...\n"
-
+                
             else:
                 doc_type = str(meta.get("doc_type", "")).lower()
-
+                
                 if any(keyword in doc_type for keyword in ["판례", "판결", "대법원", "고등법원", "지방법원"]) or \
                    any(key in meta for key in ["판결요지", "판시사항", "case_id", "court"]):
-
+                    
                     case_id = str(meta.get("case_id", ""))
                     if case_id and case_id.strip() != "":
                         formatted = f"[판례-{case_id}] 🏛️ 판례\n"
                     else:
                         precedent_count += 1
                         formatted = f"[판례-{precedent_count}] 🏛️ 판례\n"
-
+                    
                     formatted += f"내용: {content}...\n"
-
+                    
                 elif any(keyword in doc_type for keyword in ["법령해석", "해석례", "유권해석", "행정해석"]) or \
                      any(key in meta for key in ["해석내용", "법령명", "interpretation_id"]):
-
+                    
                     interpretation_id = str(meta.get("interpretation_id", ""))
                     if interpretation_id and interpretation_id.strip() != "":
                         formatted = f"[법령해석례-{interpretation_id}] ⚖️ 법령해석례\n"
                     else:
                         interpretation_count += 1
                         formatted = f"[법령해석례-{interpretation_count}] ⚖️ 법령해석례\n"
-
+                    
                     formatted += f"내용: {content}...\n"
-
+                    
                 elif any(keyword in doc_type for keyword in ["백문백답", "생활법령", "qa", "질의응답", "faq"]) or \
                      any(key in meta for key in ["질문", "답변", "question", "answer", "qa_id"]):
-
+                    
                     qa_id = str(meta.get("qa_id", ""))
                     if qa_id and qa_id.strip() != "":
                         formatted = f"[백문백답-{qa_id}] 💡 생활법령 Q&A\n"
                     else:
                         qa_count += 1
                         formatted = f"[백문백답-{qa_count}] 💡 생활법령 Q&A\n"
-
+                    
                     formatted += f"내용: {content}...\n"
-
+                    
                 else:
                     precedent_count += 1
                     source = str(meta.get("doc_type", "법률자료"))
                     formatted = f"[법률-{precedent_count}] 📋 {source}\n"
                     formatted += f"내용: {content}...\n"
-
+            
             formatted_docs.append(formatted)
-
+            
         except Exception as e:
             print(f"⚠️ 문서 포맷팅 오류: {e}")
             try:
@@ -648,7 +601,7 @@ def format_docs_optimized(docs, search_type):
                 formatted_docs.append(f"[문서-{i+1}] {content}...")
             except:
                 continue
-
+    
     # 결과 조합 - 유형별 개수 표시
     header_parts = []
     if precedent_count > 0:
@@ -659,11 +612,11 @@ def format_docs_optimized(docs, search_type):
         header_parts.append(f"생활법령Q&A {qa_count}개")
     if news_count > 0:
         header_parts.append(f"뉴스 {news_count}개")
-
+    
     header = f"📋 검색결과: {', '.join(header_parts)}\n"
     header += "="*60 + "\n"
     header += "⚠️ AI가 아래 자료 유형을 정확히 확인하고 답변하세요:\n"
-
+    
     if precedent_count > 0:
         header += f"• 판례 자료: [판례-번호] 🏛️ 판례 형태로 표시됨\n"
     if interpretation_count > 0:
@@ -672,44 +625,37 @@ def format_docs_optimized(docs, search_type):
         header += f"• 생활법령 자료: [백문백답-번호] 💡 생활법령 Q&A 형태로 표시됨\n"
     if news_count > 0:
         header += f"• 뉴스 자료: [뉴스-번호] 📰 뉴스 형태로 표시됨\n"
-
+    
     header += "="*60 + "\n\n"
-
+    
     result = header + "\n\n".join(formatted_docs)
-
+    
     return result
 
-
-# 5. 전역 시스템 인스턴스
-_conditional_rag = None
-
-def get_rag_system():
-    """RAG 시스템 싱글톤 인스턴스 반환"""
-    global _conditional_rag
-    if _conditional_rag is None:
-        _conditional_rag = OptimizedConditionalRAGSystem()
-    return _conditional_rag
-
-# 6. 검색 함수
+# 7. 최적화된 검색 함수
 def optimized_retrieve_and_format(query):
-    """검색 및 포맷팅"""
+    """최적화된 검색 및 포맷팅 - 전처리 포함"""
     try:
         rag_system = get_rag_system()
         docs, search_type = rag_system.conditional_retrieve(query)
+        
+        if not isinstance(docs, list):
+            return f"검색 결과 형식 오류: {type(docs)}"
+        
         return format_docs_optimized(docs, search_type)
+        
     except Exception as e:
         print(f"❌ 검색 오류: {e}")
         return f"검색 중 오류가 발생했습니다: {str(e)}"
 
-# 7. 채팅 체인
-def create_user_friendly_chat_chain():
-    """일반 사용자를 위한 친화적 체인 - 쿼리 전처리 정보 포함"""
+# ——— 채팅 체인 생성 ———
+def create_user_friendly_chat_chain(rag_system):
+    """사용자 친화적 채팅 체인 생성"""
     llm = ChatOpenAI(
         model="gpt-4o",
         temperature=0.3,
         max_tokens=3000,
     )
-    
 
     system_message = """
     당신은 부동산 임대차, 전세사기, 법령해석, 생활법령 Q&A, 뉴스 기사 등 다양한 법률 데이터를 바탕으로 청년을 돕는 법률 전문가 AI 챗봇입니다.  
@@ -755,20 +701,21 @@ def create_user_friendly_chat_chain():
 
     ---
 
-    ##### ✔️ **행동방침 제안** 
-    - 위의 법률 자료들을 종합하여 지금 상황에서 할 수 있는 **단계별 실행 계획** 제시:
-    - 각 단계별로 방법, 연락처, 비용 등을 안내합니다.
-    - 단계 당 1줄을 넘지 마세요.
+    ##### ✔️ **행동방침 제안**  
+    위의 법률 자료들을 종합하여 지금 상황에서 할 수 있는 **단계별 실행 계획** 제시:
+ 
 
+    각 단계별로 방법, 연락처, 비용 등을 안내합니다.
+    단계 당 1줄을 넘지 마세요.
 
     ###### ※ **유의사항**  
-    법률 자료를 바탕으로 한 주의점:
-    - 유의사항은 핵심 내용만 1줄로 요약하세요.
+    법률 자료를 바탕으로 한 주의점:  
     - 판례/해석례에서 나타난 주의할 점들  
     - 실수하기 쉬운 부분과 대비책  
     - 전문가 상담이 필요한 경우와 상담 기관 안내  
     - 법적 분쟁에서 주의해야 할 점이나 추가로 고려할 사항 정리  
 
+    유의사항은 핵심 내용만 1줄로 요약하세요.
 
     ---
 
@@ -778,6 +725,7 @@ def create_user_friendly_chat_chain():
     - context에 해당 유형의 자료가 없으면 **그 자료는 생략**하세요.  
     - 필요 시 **법률 상담, 상담 기관 등도 안내**합니다.  
     - **중복된 내용은 한 번만** 표기하세요.  
+    → 출처 표기: **[참고: 판례]**
     """
 
     
@@ -810,8 +758,8 @@ def create_user_friendly_chat_chain():
         | StrOutputParser()
     )
     return chain
-    
-# 8. 메모리 관리
+
+# ——— 메모리 관리 ———
 store = {}
 
 def get_session_history(session_id):
@@ -822,9 +770,9 @@ def get_session_history(session_id):
         history.messages = history.messages[-20:]
     return history
 
-def create_chat_chain_with_memory():
+def create_chat_chain_with_memory(rag_system):
     """메모리 기능이 있는 채팅 체인"""
-    base_chain = create_user_friendly_chat_chain()
+    base_chain = create_user_friendly_chat_chain(rag_system)
     chain_with_history = RunnableWithMessageHistory(
         base_chain,
         get_session_history,
@@ -886,21 +834,6 @@ def display_ad_banner():
     st.markdown("---")
     st.markdown("💡 **신뢰할 수 있는 부동산 전문가와 상담하세요**")
 
-# ——— 🔧 시스템 초기화 함수 (핵심!) ———
-@st.cache_resource
-def initialize_complete_system():
-    """시스템 전체 초기화"""
-    # 다운로드는 출력 없이 진행
-    download_success = download_and_extract_databases(verbose=False)
-
-    # RAG 시스템 초기화만 간단한 메시지 출력
-    try:
-        rag_system = get_rag_system()
-        return rag_system, True
-    except Exception as e:
-        return None, False
-
-
 # ——— 메인 애플리케이션 ———
 def main():
     """메인 애플리케이션 함수"""
@@ -929,7 +862,7 @@ def main():
 
     # ——— 🚀 핵심! 시스템 초기화 ———
     with st.spinner("🔄 AI 시스템 초기화 중..."):
-        rag_system, system_ready = initialize_complete_system()
+        embedding_model, legal_db, news_db, system_ready = initialize_embeddings_and_databases()
 
     # ——— 세션 초기화 ———
     if "session_id" not in st.session_state:
@@ -937,15 +870,18 @@ def main():
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
 
-    # ——— 채팅 체인 생성 ———
-    if system_ready:
+    # ——— RAG 시스템 및 채팅 체인 생성 ———
+    if system_ready and (legal_db or news_db):
         try:
-            chain = create_chat_chain_with_memory()
+            rag_system = OptimizedConditionalRAGSystem(legal_db, news_db)
+            chain = create_chat_chain_with_memory(rag_system)
         except Exception as e:
-            st.error(f"❌ 채팅 시스템 오류: {str(e)}")
+            st.error(f"❌ RAG 시스템 오류: {str(e)}")
             chain = None
+            rag_system = None
     else:
         chain = None
+        rag_system = None
 
     # ——— 사이드바 ———
     with st.sidebar:
@@ -984,17 +920,17 @@ def main():
         """, unsafe_allow_html=True)
         
         if system_ready:
-            st.success("✅ RAG 시스템 준비완료")
+            st.success("✅ 시스템 준비완료")
         else:
-            st.error("❌ RAG 시스템 오류")
+            st.error("❌ 시스템 초기화 실패")
         
         # 데이터베이스 상태
-        if os.path.exists("chroma_db_law_real_final"):
+        if legal_db:
             st.success("✅ 법률 DB 연결됨")
         else:
             st.warning("⚠️ 법률 DB 미연결")
             
-        if os.path.exists("ja_chroma_db"):
+        if news_db:
             st.success("✅ 뉴스 DB 연결됨")
         else:
             st.warning("⚠️ 뉴스 DB 미연결")
@@ -1052,7 +988,6 @@ def main():
     # ——— 질문 입력 ———
     prompt = st.session_state.pop("sidebar_prompt", None)
     if not prompt:
-        # 커스텀 입력창 스타일
         st.markdown("""
         <div style="position: sticky; bottom: 0; background: rgba(255,255,255,0.95); 
                     padding: 1rem; border-radius: 15px; margin-top: 2rem;
