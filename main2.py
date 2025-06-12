@@ -1,3 +1,276 @@
+# 파일 맨 위에 이 코드를 추가하세요 (기존 import들 보다 먼저)
+
+import os
+import sys
+
+# Streamlit Cloud 환경 감지 및 설정
+if 'streamlit.app' in os.environ.get('HOSTNAME', ''):
+    print("🌐 Streamlit Cloud 환경 감지됨")
+    # PyTorch 관련 환경 변수 설정
+    os.environ['TORCH_HOME'] = '/tmp/torch'
+    os.environ['TRANSFORMERS_CACHE'] = '/tmp/transformers'
+    os.environ['HF_HOME'] = '/tmp/huggingface'
+
+# SQLite 모듈 교체 (조건부)
+try:
+    __import__('pysqlite3')
+    sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
+    print("✅ pysqlite3 모듈로 교체 완료")
+except ImportError:
+    print("⚠️ pysqlite3 없음, 기본 sqlite3 사용")
+
+import time
+import functools
+import uuid
+import logging
+import requests
+import zipfile
+
+import streamlit as st
+import streamlit.components.v1 as components
+
+# PyTorch 관련 import를 조건부로 처리
+try:
+    import torch
+    print(f"✅ PyTorch 버전: {torch.__version__}")
+except Exception as e:
+    print(f"⚠️ PyTorch 로딩 문제: {e}")
+
+import numpy as np
+
+# sentence-transformers import를 더 안전하게 처리
+try:
+    from sentence_transformers import SentenceTransformer
+    print("✅ SentenceTransformers 로딩 완료")
+except Exception as e:
+    print(f"❌ SentenceTransformers 로딩 실패: {e}")
+    st.error(f"SentenceTransformers 로딩 실패: {e}")
+    st.stop()
+
+from sklearn.metrics.pairwise import cosine_similarity
+
+from langchain_chroma import Chroma
+from langchain_community.retrievers import BM25Retriever
+from langchain.retrievers import EnsembleRetriever
+from langchain_community.document_transformers import LongContextReorder
+from langchain_core.documents import Document
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.output_parsers import StrOutputParser
+from langchain_core.runnables import RunnableLambda
+from langchain_core.runnables.history import RunnableWithMessageHistory
+from langchain_community.chat_message_histories import ChatMessageHistory
+from langchain_openai import ChatOpenAI
+
+# 로그 레벨 감소
+logging.basicConfig(level=logging.WARNING)
+
+print("🚀 모든 라이브러리 import 완료")
+
+# ——— 🔧 Streamlit Cloud 최적화된 벡터 DB 다운로드 함수 ———
+@st.cache_resource
+def download_and_extract_databases(verbose=True):
+    """Streamlit Cloud 환경에 최적화된 벡터 DB 다운로드"""
+    
+    # Streamlit Cloud에서는 /tmp 디렉토리 사용
+    base_dir = "/tmp" if 'streamlit.app' in os.environ.get('HOSTNAME', '') else "."
+    
+    urls = {
+        "chroma_db_law_real_final": "https://huggingface.co/datasets/sujeonggg/chroma_db_law_real_final/resolve/main/chroma_db_law_real_final.zip",
+        "ja_chroma_db": "https://huggingface.co/datasets/sujeonggg/chroma_db_law_real_final/resolve/main/ja_chroma_db.zip",
+    }
+
+    def download_and_unzip(url, extract_to):
+        # 절대 경로로 변경
+        full_extract_path = os.path.join(base_dir, extract_to)
+        os.makedirs(full_extract_path, exist_ok=True)
+        zip_path = os.path.join(full_extract_path, "temp.zip")
+
+        # 이미 존재하는지 확인
+        required_files = ["chroma.sqlite3"]
+        if all(os.path.exists(os.path.join(full_extract_path, f)) for f in required_files):
+            if verbose:
+                print(f"✅ Already exists: {full_extract_path}")
+                sqlite_path = os.path.join(full_extract_path, "chroma.sqlite3")
+                if os.path.exists(sqlite_path):
+                    file_size = os.path.getsize(sqlite_path) / (1024*1024)
+                    print(f"   파일 크기: {file_size:.1f}MB")
+            return True, full_extract_path
+
+        try:
+            if verbose:
+                print(f"📦 Downloading from {url}...")
+            
+            # Streamlit Cloud에 적합한 설정
+            headers = {'User-Agent': 'Mozilla/5.0 (compatible; StreamlitApp/1.0)'}
+            r = requests.get(url, stream=True, timeout=60, headers=headers)
+            r.raise_for_status()
+            
+            total_size = int(r.headers.get('content-length', 0))
+            downloaded_size = 0
+            
+            with open(zip_path, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        downloaded_size += len(chunk)
+                        
+                        # 진행률 표시 (간소화)
+                        if verbose and total_size > 0 and downloaded_size % (1024*1024*50) == 0:
+                            progress = (downloaded_size / total_size) * 100
+                            print(f"   진행률: {progress:.0f}%")
+
+            if verbose:
+                print(f"🧩 압축 해제 중...")
+            
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(full_extract_path)
+            
+            os.remove(zip_path)
+            
+            # 성공 검증
+            sqlite_path = os.path.join(full_extract_path, "chroma.sqlite3")
+            if os.path.exists(sqlite_path):
+                file_size = os.path.getsize(sqlite_path) / (1024*1024)
+                if verbose:
+                    print(f"✅ 성공! 파일 크기: {file_size:.1f}MB")
+                return True, full_extract_path
+            else:
+                if verbose:
+                    print(f"❌ chroma.sqlite3 파일이 없습니다")
+                return False, None
+                
+        except Exception as e:
+            if verbose:
+                print(f"❌ 다운로드 실패: {e}")
+            return False, None
+
+    success_paths = {}
+    success_count = 0
+    total_count = len(urls)
+    
+    for name, url in urls.items():
+        if verbose:
+            print(f"\n🔄 {name} 다운로드 시작...")
+        success, path = download_and_unzip(url, name)
+        if success:
+            success_count += 1
+            success_paths[name] = path
+        else:
+            if verbose:
+                print(f"❌ {name} 다운로드 실패")
+
+    if verbose:
+        print(f"\n📊 다운로드 결과: {success_count}/{total_count} 성공")
+    
+    return success_count == total_count, success_paths
+
+# ——— 🔧 Streamlit Cloud 최적화된 초기화 함수 ———
+@st.cache_resource
+def initialize_embeddings_and_databases():
+    """Streamlit Cloud 환경에 최적화된 초기화"""
+    try:
+        print("📥 벡터 DB 다운로드 시작...")
+        
+        # 1. 다운로드 시도
+        download_success, db_paths = download_and_extract_databases(verbose=True)
+        
+        if not download_success:
+            print("❌ DB 다운로드 실패")
+            return None, None, None, False
+        
+        # 2. 임베딩 모델 초기화 (더 안전하게)
+        print("🔄 임베딩 모델 로딩 중...")
+        try:
+            # Streamlit Cloud에서 더 안정적인 모델 로딩
+            embedding_model = SentenceTransformer(
+                "snunlp/KR-SBERT-V40K-klueNLI-augSTS",
+                cache_folder="/tmp/sentence_transformers" if 'streamlit.app' in os.environ.get('HOSTNAME', '') else None
+            )
+            print("✅ 임베딩 모델 로딩 완료")
+        except Exception as e:
+            print(f"❌ 임베딩 모델 로딩 실패: {e}")
+            return None, None, None, False
+        
+        # 3. Chroma DB 연결
+        legal_db = None
+        news_db = None
+        
+        # 법률 DB
+        if "chroma_db_law_real_final" in db_paths:
+            try:
+                legal_db = Chroma(
+                    persist_directory=db_paths["chroma_db_law_real_final"],
+                    embedding_function=embedding_model
+                )
+                print("✅ 법률 DB 연결 완료")
+                
+                # 간단한 테스트
+                test_docs = legal_db.similarity_search("전세", k=1)
+                print(f"🧪 법률 DB 테스트: {len(test_docs)}개 결과")
+                
+            except Exception as e:
+                print(f"⚠️ 법률 DB 연결 실패: {e}")
+        
+        # 뉴스 DB
+        if "ja_chroma_db" in db_paths:
+            try:
+                news_db = Chroma(
+                    persist_directory=db_paths["ja_chroma_db"],
+                    embedding_function=embedding_model
+                )
+                print("✅ 뉴스 DB 연결 완료")
+                
+                # 간단한 테스트
+                test_docs = news_db.similarity_search("전세", k=1)
+                print(f"🧪 뉴스 DB 테스트: {len(test_docs)}개 결과")
+                
+            except Exception as e:
+                print(f"⚠️ 뉴스 DB 연결 실패: {e}")
+        
+        print("✅ 모든 시스템 초기화 완료")
+        return embedding_model, legal_db, news_db, True
+        
+    except Exception as e:
+        print(f"❌ 초기화 실패: {e}")
+        import traceback
+        print(traceback.format_exc())
+        return None, None, None, False
+
+# 나머지 코드는 기존과 동일하게 유지하되, main() 함수 시작 부분에 추가:
+
+def main():
+    """메인 애플리케이션 함수"""
+    
+    # 🔧 초기 상태 로그
+    print("🚀 메인 함수 시작")
+    print(f"🌐 환경: {'Streamlit Cloud' if 'streamlit.app' in os.environ.get('HOSTNAME', '') else 'Local'}")
+    
+    try:
+        # Streamlit 페이지 설정
+        st.set_page_config(
+            page_title="AI 스위치온 - 판례 검색 시스템", 
+            page_icon="🏠", 
+            layout="wide",
+            initial_sidebar_state="expanded"
+        )
+        print("✅ Streamlit 페이지 설정 완료")
+
+        # 나머지 코드는 기존과 동일...
+        
+    except Exception as e:
+        print(f"❌ 메인 함수 오류: {e}")
+        import traceback
+        print(traceback.format_exc())
+        st.error(f"애플리케이션 초기화 실패: {e}")
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+
+
 __import__('pysqlite3')
 import sys
 sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
