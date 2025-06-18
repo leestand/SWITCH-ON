@@ -35,19 +35,24 @@
 
 ```bash
 SWITCH-ON/
-├── main.py                 # 메인 애플리케이션
-├── config.py              # 설정 및 상수 관리
-├── database_utils.py      # 데이터베이스 다운로드 및 초기화
-├── styles.py              # Streamlit 커스텀 CSS
-├── query_preprocessor.py  # 법률 쿼리 전처리
-├── document_formatter.py  # 문서 포맷팅 유틸리티
-├── rag_system.py          # RAG 시스템 구현
-├── chat_chain.py          # 채팅 체인 및 메모리 관리
-├── ui_components.py       # UI 컴포넌트 관리
-├── ads.py                 # 광고 배너 기능
-├── requirements.txt       # 의존성 패키지
-├── streamlit_all_code.py  # 스트림릿 연결 서비스 실행
-└── README.md             # 프로젝트 문서
+├── core/
+│   ├── main.py                 # 메인 애플리케이션
+│   ├── config.py              # 설정 및 상수 중앙 관리
+│   └── requirements.txt       # 의존성 패키지 목록
+├── data/
+│   └── database_utils.py      # DB 다운로드 및 초기화 기능
+├── AI/
+│   ├── query_preprocessor.py  # 법률 쿼리 전처리 클래스
+│   ├── rag_system.py          # RAG 시스템 구현
+│   ├── chat_chain.py          # 채팅 체인 및 메모리 관리
+│   └── document_formatter.py  # 문서 포맷팅 유틸리티
+├── UI/
+│   ├── styles.py              # Streamlit 커스텀 CSS
+│   ├── ui_components.py       # UI 컴포넌트 모듈화
+│   └── ads.py                 # 광고 배너 기능
+├──.gitignore                  # Git 제외 파일 설정
+├── streamlit_all_code.py     # 스트림릿 연결 서비스 실행
+└── README.md                 # 프로젝트 문서
 
 ```
 
