@@ -13,7 +13,6 @@
 👉 [SWITCH-ON 서비스 발표자료 보러가기](./LeeseoAn_Portfolio_SWITCH_ON.pdf)
 
 
-
 ## 🎥 챗봇 발표 및 시연 영상
 
 [![AI 스위치온 시연 영상](https://img.youtube.com/vi/4jeZ1oXFj5Q/0.jpg)](https://youtu.be/4jeZ1oXFj5Q?feature=shared)
@@ -21,6 +20,12 @@
 **[🔗 유튜브에서 시연 영상 보기](https://youtu.be/4jeZ1oXFj5Q?feature=shared)**
 
 실제 챗봇의 작동 방식과 주요 기능들을 직접 확인해보실 수 있습니다.
+
+
+### 팀 정보
+- **팀명**: SWITCH-ON
+- **팀장**: 안이서
+- **팀원**: 김은솔, 신수정
 
 
 ## 🚀 주요 기능
@@ -157,4 +162,9 @@ streamlit run main.py
 - `sentence-transformers`: 텍스트 임베딩
 - `chromadb`: 벡터 데이터베이스
 - `openai`: GPT 모델 활용
+
+---
+
+**SWITCH-ON 팀**
+- 2025년 국민행복 서비스 발굴·창업경진대회 참가작
 
