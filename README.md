@@ -40,7 +40,9 @@ SWITCH-ON/
 ├── ui_components.py       # UI 컴포넌트 관리
 ├── ads.py                 # 광고 배너 기능
 ├── requirements.txt       # 의존성 패키지
+├── streamlit_all_code.py  # 스트림릿 연결 서비스 실행
 └── README.md             # 프로젝트 문서
+
 ```
 
 ## 🛠️ 설치 및 실행
