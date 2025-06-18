@@ -2,6 +2,11 @@
 
 부동산 임대차, 전세사기, 법령해석, 생활법령 Q&A, 뉴스 기사 등 다양한 법률 데이터를 바탕으로 청년을 돕는 법률 전문가 AI 챗봇입니다.
 
+## 📑 발표자료
+
+👉 [SWITCH-ON 서비스 발표자료 보러가기](./LeeseoAn_Portfolio_SWITCH_ON.pdf)
+
+
 ## 🎥 챗봇 발표 및 시연 영상
 
 [![AI 스위치온 시연 영상](https://img.youtube.com/vi/4jeZ1oXFj5Q/0.jpg)](https://youtu.be/4jeZ1oXFj5Q?feature=shared)
